@@ -127,7 +127,11 @@ PRODUCT_PACKAGES += \
     init.qcom.rc \
     init.qcom.usb.rc \
     init.target.rc \
-    ueventd.qcom.rc \
+    ueventd.qcom.rc 
+
+# Ramdisk for FeliCa
+PRODUCT_PACKAGES += \
+    FeliCaLock \
     init.carrier.rc \
     init.felica.sh
 
