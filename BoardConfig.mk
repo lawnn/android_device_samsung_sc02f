@@ -113,6 +113,10 @@ endif
 # SELinux
 -include device/qcom/sepolicy/sepolicy.mk
 BOARD_SEPOLICY_DIRS += device/samsung/sc02f/sepolicy
+BOARD_SEPOLICY_UNION += \
+    felica.te \
+    mfdp.te \
+    mfsc.te
 
 # Wifi
 BOARD_HAVE_SAMSUNG_WIFI := true
