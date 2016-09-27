@@ -20,7 +20,6 @@ import static com.android.internal.telephony.RILConstants.*;
 
 import android.content.Context;
 import android.media.AudioManager;
-import android.telephony.Rlog;
 import android.os.AsyncResult;
 import android.os.Message;
 import android.os.Parcel;
@@ -54,14 +53,14 @@ public class SamsungQcomRIL extends RIL {
 
     public SamsungQcomRIL(Context context, int networkMode, int cdmaSubscription) {
         super(context, networkMode, cdmaSubscription, null);
-        mQANElements = 6;
+        mQANElements = SystemProperties.getInt("ro.ril.telephony.mqanelements", 6);
         mAudioManager = (AudioManager)mContext.getSystemService(Context.AUDIO_SERVICE);
     }
 
     public SamsungQcomRIL(Context context, int preferredNetworkType,
             int cdmaSubscription, Integer instanceId) {
         super(context, preferredNetworkType, cdmaSubscription, instanceId);
-        mQANElements = 6;
+        mQANElements = SystemProperties.getInt("ro.ril.telephony.mqanelements", 6);
         mAudioManager = (AudioManager)mContext.getSystemService(Context.AUDIO_SERVICE);
     }
 
@@ -93,6 +92,25 @@ public class SamsungQcomRIL extends RIL {
         if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
 
         send(rr);
+    }
+
+    @Override
+    public void
+    acceptCall(Message result) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_ANSWER, result);
+
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeInt(0);
+
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+
+        send(rr);
+    }
+
+    @Override
+    public void setPhoneType(int phoneType) {
+        super.setPhoneType(phoneType);
+        mIsGsm = (phoneType != RILConstants.CDMA_PHONE);
     }
 
     @Override
@@ -292,6 +310,38 @@ public class SamsungQcomRIL extends RIL {
                 tdScdmaRscp, mIsGsm);
     }
 
+    // this method is used in the search network functionality.
+    // in mobile network setting-> network operators
+    @Override
+    protected Object
+    responseOperatorInfos(Parcel p) {
+        String strings[] = (String [])responseStrings(p);
+        ArrayList<OperatorInfo> ret;
+
+        if (strings.length % mQANElements != 0) {
+            throw new RuntimeException(
+                        "RIL_REQUEST_QUERY_AVAILABLE_NETWORKS: invalid response. Got "
+                        + strings.length + " strings, expected multiple of " + mQANElements);
+        }
+
+        ret = new ArrayList<OperatorInfo>(strings.length / mQANElements);
+        Operators init = null;
+        if (strings.length != 0) {
+            init = new Operators();
+        }
+        for (int i = 0 ; i < strings.length ; i += mQANElements) {
+            String temp = init.unOptimizedOperatorReplace(strings[i+0]);
+            ret.add (
+                    new OperatorInfo(
+                                    temp, //operatorAlphaLong
+                                    temp, //operatorAlphaShort
+                                    strings[i+2], //operatorNumeric
+                                    strings[i+3])); //state
+        }
+
+        return ret;
+    }
+
     @Override
     protected void
     notifyRegistrantsCdmaInfoRec(CdmaInformationRecords infoRec) {
@@ -313,67 +363,36 @@ public class SamsungQcomRIL extends RIL {
     }
 
     @Override
-    public void setPhoneType(int phoneType) {
-        super.setPhoneType(phoneType);
-        mIsGsm = (phoneType != RILConstants.CDMA_PHONE);
-    }
-
-    @Override
     protected void
-    processUnsolicited (Parcel p) {
+    processUnsolicited(Parcel p) {
         Object ret;
         int dataPosition = p.dataPosition(); // save off position within the Parcel
         int response = p.readInt();
-        int newResponse = response;
 
         switch(response) {
-            case RIL_UNSOL_ON_SS_LL:
-                newResponse = RIL_UNSOL_ON_SS;
+            case RIL_UNSOL_AM:
+                ret = responseString(p);
                 break;
+            case RIL_UNSOL_WB_AMR_STATE:
+                ret = responseInts(p);
+                setWbAmr(((int[])ret)[0]);
+                break;
+            case RIL_UNSOL_ON_SS_LL:
+                p.setDataPosition(dataPosition);
+                p.writeInt(RIL_UNSOL_ON_SS);
+                // Do not break
+            default:
+                // Rewind the Parcel
+                p.setDataPosition(dataPosition);
+                // Forward responses that we are not overriding to the super class
+                super.processUnsolicited(p);
+                return;
         }
-        if (newResponse != response) {
-            p.setDataPosition(dataPosition);
-            p.writeInt(newResponse);
-        }
-        p.setDataPosition(dataPosition);
-        super.processUnsolicited(p);
-    }
-
-    @Override
-    public void
-    acceptCall (Message result) {
-        RILRequest rr
-                = RILRequest.obtain(RIL_REQUEST_ANSWER, result);
-
-        rr.mParcel.writeInt(1);
-        rr.mParcel.writeInt(0);
-
-        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
-
-        send(rr);
-    }
-
-
-    private void
-    dialEmergencyCall(String address, int clirMode, Message result) {
-        RILRequest rr;
-
-        rr = RILRequest.obtain(RIL_REQUEST_DIAL_EMERGENCY, result);
-        rr.mParcel.writeString(address);
-        rr.mParcel.writeInt(clirMode);
-        rr.mParcel.writeInt(0);        // CallDetails.call_type
-        rr.mParcel.writeInt(3);        // CallDetails.call_domain
-        rr.mParcel.writeString("");    // CallDetails.getCsvFromExtra
-        rr.mParcel.writeInt(0);        // Unknown
-
-        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
-
-        send(rr);
     }
 
     @Override
     protected RILRequest
-    processSolicited (Parcel p) {
+    processSolicited(Parcel p) {
         int serial, error;
         boolean found = false;
         int dataPosition = p.dataPosition(); // save off position within the Parcel
@@ -388,9 +407,7 @@ public class SamsungQcomRIL extends RIL {
                     try {switch (tr.mRequest) {
                             /* Get those we're interested in */
                         case RIL_REQUEST_DATA_REGISTRATION_STATE:
-                            rr = tr;
-                            break;
-                        case RIL_REQUEST_QUERY_AVAILABLE_NETWORKS:
+                        case RIL_REQUEST_OPERATOR:
                             rr = tr;
                             break;
                     }} catch (Throwable thr) {
@@ -418,7 +435,7 @@ public class SamsungQcomRIL extends RIL {
         if (error == 0 || p.dataAvail() > 0) {
             switch (rr.mRequest) {
                 case RIL_REQUEST_DATA_REGISTRATION_STATE: ret = responseDataRegistrationState(p); break;
-                case RIL_REQUEST_QUERY_AVAILABLE_NETWORKS: ret =  responseOperatorInfos(p); break;
+                case RIL_REQUEST_OPERATOR: ret = operatorCheck(p); break;
                 default:
                     throw new RuntimeException("Unrecognized solicited response: " + rr.mRequest);
             }
@@ -448,6 +465,17 @@ public class SamsungQcomRIL extends RIL {
         return response;
     }
 
+    private Object
+    operatorCheck(Parcel p) {
+        String response[] = (String[])responseStrings(p);
+        for (int i = 0 ; i < 2 ; i++) {
+            if (response[i] != null) {
+                response[i] = Operators.operatorReplace(response[i]);
+            }
+        }
+        return response;
+    }
+
     /**
      * Set audio parameter "wb_amr" for HD-Voice (Wideband AMR).
      *
@@ -460,54 +488,6 @@ public class SamsungQcomRIL extends RIL {
         } else if (state == 0) {
             if (RILJ_LOGD) riljLog("setWbAmr: setting audio parameter - wb_amr=off");
             mAudioManager.setParameters("wide_voice_enable=false");
-        }
-    }
-
-    //this method is used in the search network functionality.
-    // in mobile network setting-> network operators
-    @Override
-    protected Object
-    responseOperatorInfos(Parcel p) {
-        String strings[] = (String [])responseStrings(p);
-        ArrayList<OperatorInfo> ret;
-
-        if (strings.length % mQANElements != 0) {
-            throw new RuntimeException(
-                                       "RIL_REQUEST_QUERY_AVAILABLE_NETWORKS: invalid response. Got "
-                                       + strings.length + " strings, expected multiple of " + mQANElements);
-        }
-
-        ret = new ArrayList<OperatorInfo>(strings.length / mQANElements);
-        Operators init = null;
-        if (strings.length != 0) {
-            init = new Operators();
-        }
-        for (int i = 0 ; i < strings.length ; i += mQANElements) {
-            ret.add (
-                     new OperatorInfo(
-                                      init.unOptimizedOperatorReplace(strings[i+0]), //operatorAlphaLong
-                                      init.unOptimizedOperatorReplace(strings[i+1]), //operatorAlphaShort
-                                      strings[i+2],  //operatorNumeric
-                                      strings[i+3]));//state
-        }
-
-        return ret;
-    }
-
-
-    @Override
-    public void
-    setupDataCall(String radioTechnology, String profile, String apn,
-            String user, String password, String authType, String protocol,
-            Message result) {
-
-        super.setupDataCall(radioTechnology, profile, apn, user, password,
-                    authType, protocol, result);
-
-        try {
-            int prefNwType = Integer.parseInt(radioTechnology)-2;
-            setPreferredNetworkType(prefNwType, null);
-        } catch (NumberFormatException nfe) {
         }
     }
 }
